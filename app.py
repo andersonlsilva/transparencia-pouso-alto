@@ -37,25 +37,75 @@ params_desp = {
 
 data_raw = get_data("https://pmpousoalto.geosiap.net.br:8443/portal-transparencia/api/default/execucao/despesas_detalhadas/despesas_detalhadas", params_desp)
 
+# --- PROCESSAMENTO DE DESPESAS ---
+# ... (mantenha a parte do get_data igual) ...
+
 if data_raw and 'despesas_detalhadas' in data_raw:
     df = pd.DataFrame(data_raw['despesas_detalhadas'])
     
-    # Conversão de valores conforme campos de saída reais
-    df['valor_empenhado'] = pd.to_numeric(df['valor_empenhado'], errors='coerce').fillna(0)
-    df['valor_liquidado'] = pd.to_numeric(df['valor_liquidado'], errors='coerce').fillna(0)
-    df['vl_pago'] = pd.to_numeric(df['vl_pago'], errors='coerce').fillna(0)
+    # FORÇA TODAS AS COLUNAS PARA MINÚSCULO (Evita erro de Valor_Empenhado vs valor_empenhado)
+    df.columns = [c.lower() for c in df.columns]
+    colunas_reais = df.columns.tolist()
 
-    # --- MÉTRICAS TOPO ---
-    m1, m2, m3 = st.columns(3)
-    with m1:
-        st.metric("Total Empenhado", f"R$ {df['valor_empenhado'].sum():,.2f}".replace(",", "v").replace(".", ",").replace("v", "."))
-    with m2:
-        st.metric("Total Pago", f"R$ {df['vl_pago'].sum():,.2f}".replace(",", "v").replace(".", ",").replace("v", "."))
-    with m3:
-        st.metric("Qtd. de Documentos", len(df))
+    # IDENTIFICAÇÃO FLEXÍVEL (Busca o nome que existir na lista)
+    c_valor = next((c for c in ['valor_empenhado', 'vl_empenhado', 'vlr_empenhado', 'valor'] if c in colunas_reais), None)
+    c_credor = next((c for c in ['credor', 'nm_credor', 'nome_credor'] if c in colunas_reais), None)
+    c_pago = next((c for c in ['vl_pago', 'valor_pago', 'vlr_pago'] if c in colunas_reais), None)
+    c_funcao = next((c for c in ['funcao', 'ds_funcao'] if c in colunas_reais), None)
 
-    st.markdown("---")
+    if c_valor and c_credor:
+        # Conversão segura para números
+        df[c_valor] = pd.to_numeric(df[c_valor], errors='coerce').fillna(0)
+        if c_pago:
+            df[c_pago] = pd.to_numeric(df[c_pago], errors='coerce').fillna(0)
 
+        # --- MÉTRICAS TOPO ---
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric("Total Empenhado", f"R$ {df[c_valor].sum():,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        with m2:
+            valor_pago_total = df[c_pago].sum() if c_pago else 0
+            st.metric("Total Pago", f"R$ {valor_pago_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        with m3:
+            st.metric("Qtd. de Documentos", len(df))
+
+        st.markdown("---")
+
+        # --- GRÁFICOS (Usando as variáveis detectadas) ---
+        col_esq, col_dir = st.columns([2, 1])
+
+        with col_esq:
+            st.subheader("🏢 Maiores Recebedores (Credores)")
+            df_credor = df.groupby(c_credor)[c_valor].sum().sort_values(ascending=True).tail(10).reset_index()
+            fig_cred = px.bar(df_credor, x=c_valor, y=c_credor, orientation='h',
+                              color=c_valor, color_continuous_scale='Blues')
+            st.plotly_chart(fig_cred, use_container_width=True)
+
+            if c_funcao:
+                st.subheader("📂 Gastos por Função (Área)")
+                df_funcao = df.groupby(c_funcao)[c_valor].sum().reset_index()
+                fig_fun = px.pie(df_funcao, values=c_valor, names=c_funcao, hole=.4)
+                st.plotly_chart(fig_fun, use_container_width=True)
+
+        with col_dir:
+            st.subheader("🔍 Detalhes por Credor")
+            credor_lista = sorted(df[c_credor].unique())
+            selecionado = st.selectbox("Selecione um Credor:", ["Escolha..."] + credor_lista)
+
+            if selecionado != "Escolha...":
+                detalhe = df[df[c_credor] == selecionado].iloc[0]
+                st.success(f"**{selecionado}**")
+                # Busca campos adicionais de forma segura
+                c_data = next((c for c in ['dt_doc_despesa', 'data', 'dt_documento'] if c in colunas_reais), colunas_reais[0])
+                c_hist = next((c for c in ['historico', 'ds_historico'] if c in colunas_reais), None)
+                
+                st.write(f"📅 **Data:** {detalhe[c_data]}")
+                st.write(f"💰 **Valor:** R$ {detalhe[c_valor]:,.2f}")
+                if c_hist:
+                    st.write(f"📝 **Histórico:**")
+                    st.caption(detalhe[c_hist])
+    else:
+        st.error(f"Não conseguimos mapear as colunas. Disponíveis: {colunas_reais}")
     # --- GRÁFICOS INTERATIVOS ---
     col_esq, col_dir = st.columns([2, 1])
 
