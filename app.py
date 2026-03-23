@@ -3,197 +3,98 @@ import pandas as pd
 import plotly.express as px
 import requests
 
-# Configuração de Layout
-st.set_page_config(page_title="Portal Transparência Pouso Alto",
-                   layout="wide", page_icon="🏦")
+# Configuração de Layout e Estilo
+st.set_page_config(page_title="Transparência Pouso Alto", layout="wide", page_icon="🏦")
 
-# Estilização Customizada via CSS
 st.markdown("""
     <style>
-    .main { background-color: #f5f7f9; }
-    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    div.stButton > button:first-child { background-color: #007bff; color: white; }
+    .main { background-color: #f8f9fa; }
+    .stMetric { background-color: #ffffff; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border: 1px solid #e9ecef; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- FUNÇÕES DE DADOS (CACHE PARA VELOCIDADE) ---
-
-
-@st.cache_data
-def fetch_data(url, params):
+# --- FUNÇÃO DE BUSCA ---
+@st.cache_data(ttl=3600)
+def get_data(url, params):
     try:
-        response = requests.get(url, params=params, verify=False, timeout=10)
+        # Nota: verify=False para evitar problemas de certificado da API municipal
+        response = requests.get(url, params=params, verify=False, timeout=15)
         return response.json()
     except Exception as e:
         return None
 
+# --- CABEÇALHO ---
+st.title("🏦 Portal da Transparência: Pouso Alto - MG")
+st.info(f"📍 **Entidade:** PREFEITURA MUNICIPAL DE POUSO ALTO (CNPJ: 18.667.212/0001-92)")
 
-# --- SIDEBAR / FILTROS ---
-st.sidebar.header("📍 Localização & Período")
-st.sidebar.info(
-    "Município: Pouso Alto - MG\n\nEntidade: Prefeitura Municipal\n\nData: 21/03/2026")
+# --- PROCESSAMENTO DE DESPESAS ---
+params_desp = {
+    'cp_ano': '2026',
+    'pec': '1',
+    'ano': '2026-03-21',
+    'id_entidade': '2'
+}
 
-# --- CORPO PRINCIPAL ---
-st.title("🏦 Painel de Transparência Cidadã")
-st.subheader("Entenda como o dinheiro público está sendo utilizado")
+data_raw = get_data("https://pmpousoalto.geosiap.net.br:8443/portal-transparencia/api/default/execucao/despesas_detalhadas/despesas_detalhadas", params_desp)
 
-# Carregamento dos Dados
-despesas_raw = fetch_data(
-    "https://pmpousoalto.geosiap.net.br:8443/portal-transparencia/api/default/execucao/despesas_detalhadas/despesas_detalhadas",
-    {'cp_ano': '2026', 'pec': '1', 'ano': '2026-03-21', 'id_entidade': '2'}
-)
+if data_raw and 'despesas_detalhadas' in data_raw:
+    df = pd.DataFrame(data_raw['despesas_detalhadas'])
+    
+    # Conversão de valores conforme campos de saída reais
+    df['valor_empenhado'] = pd.to_numeric(df['valor_empenhado'], errors='coerce').fillna(0)
+    df['valor_liquidado'] = pd.to_numeric(df['valor_liquidado'], errors='coerce').fillna(0)
+    df['vl_pago'] = pd.to_numeric(df['vl_pago'], errors='coerce').fillna(0)
 
-dispensas_raw = fetch_data(
-    "https://pmpousoalto.geosiap.net.br:8443/portal-transparencia/api/default/licitacoes/dispensas/dispensas",
-    {'data_inicial': '', 'dta_final': '', 'ano': '2026-03-21',
-        'id_entidade': '2', 'situacao_processo_compra': '0'}
-)
+    # --- MÉTRICAS TOPO ---
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        st.metric("Total Empenhado", f"R$ {df['valor_empenhado'].sum():,.2f}".replace(",", "v").replace(".", ",").replace("v", "."))
+    with m2:
+        st.metric("Total Pago", f"R$ {df['vl_pago'].sum():,.2f}".replace(",", "v").replace(".", ",").replace("v", "."))
+    with m3:
+        st.metric("Qtd. de Documentos", len(df))
 
-# --- SEÇÃO 1: RESUMO DE DESPESAS
-if despesas_raw:
-    # 1. ACESSANDO A "CAIXA" CORRETA (Ajuste baseado no erro que você recebeu)
-    if isinstance(despesas_raw, dict) and 'despesas_detalhadas' in despesas_raw:
-        df_desp = pd.DataFrame(despesas_raw['despesas_detalhadas'])
-    elif isinstance(despesas_raw, list):
-        df_desp = pd.DataFrame(despesas_raw)
-    else:
-        # Se os dados estiverem em outra chave ou direto no dict
-        df_desp = pd.DataFrame(despesas_raw)
+    st.markdown("---")
 
-    # 2. Identificação Automática de Colunas
-    colunas = df_desp.columns.tolist()
+    # --- GRÁFICOS INTERATIVOS ---
+    col_esq, col_dir = st.columns([2, 1])
 
-    # Nomes que costumam vir dentro da chave 'despesas_detalhadas'
-    c_valor = next(
-        (c for c in ['vl_empenhado', 'vlr_empenhado', 'valor'] if c in colunas), None)
-    c_credor = next(
-        (c for c in ['nm_credor', 'nome_credor', 'credor'] if c in colunas), None)
+    with col_esq:
+        st.subheader("🏢 Maiores Recebedores (Credores)")
+        # Agrupamento por Credor
+        df_credor = df.groupby('credor')['valor_empenhado'].sum().sort_values(ascending=True).tail(10).reset_index()
+        fig_cred = px.bar(df_credor, x='valor_empenhado', y='credor', orientation='h',
+                          color='valor_empenhado', color_continuous_scale='Blues',
+                          labels={'valor_empenhado': 'Total (R$)', 'credor': 'Nome do Credor'})
+        fig_cred.update_layout(height=400, margin=dict(l=20, r=20, t=30, b=20))
+        st.plotly_chart(fig_cred, use_container_width=True)
 
-    # Se ainda não achou, pega por tentativa (comum em APIs Geosiap)
-    if not c_valor:
-        c_valor = 'vl_empenhado' if 'vl_empenhado' in colunas else colunas[-1]
-    if not c_credor:
-        c_credor = 'nm_credor' if 'nm_credor' in colunas else colunas[0]
+        st.subheader("📂 Gastos por Função (Área)")
+        df_funcao = df.groupby('funcao')['valor_empenhado'].sum().reset_index()
+        fig_fun = px.pie(df_funcao, values='valor_empenhado', names='funcao', hole=.4,
+                         color_discrete_sequence=px.colors.qualitative.Safe)
+        st.plotly_chart(fig_fun, use_container_width=True)
 
-    # 3. Validação e Gráficos
-    if c_valor in colunas and c_credor in colunas:
-        # Garante que o valor seja numérico
-        df_desp[c_valor] = pd.to_numeric(
-            df_desp[c_valor], errors='coerce').fillna(0)
+    with col_dir:
+        st.subheader("🔍 Detalhes por Credor")
+        credor_lista = sorted(df['credor'].unique())
+        selecionado = st.selectbox("Selecione um Credor:", ["Escolha..."] + credor_lista)
 
-    # 3. Validação Final antes de processar
-    if c_valor and c_credor:
-        # Garante que o valor seja numérico (crucial para o sum)
-        df_desp[c_valor] = pd.to_numeric(
-            df_desp[c_valor], errors='coerce').fillna(0)
+        if selecionado != "Escolha...":
+            detalhe = df[df['credor'] == selecionado].iloc[0]
+            st.success(f"**{selecionado}**")
+            st.write(f"📅 **Data:** {detalhe['dt_doc_despesa']}")
+            st.write(f"💰 **Valor Empenhado:** R$ {detalhe['valor_empenhado']:,.2f}")
+            st.write(f"🏷️ **Função:** {detalhe['funcao']}")
+            st.write(f"⚙️ **Programa:** {detalhe['programa']}")
+            st.write(f"📄 **Nº Doc:** {detalhe['nr_doc_despesa']}")
+            st.write(f"📝 **Histórico:**")
+            st.caption(detalhe['historico'])
+            
+            # Botão para ver todos os processos deste credor
+            if st.button("Ver todas as notas deste credor"):
+                st.dataframe(df[df['credor'] == selecionado][['dt_doc_despesa', 'valor_empenhado', 'historico']])
 
-        # KPIs (Cartões de Resumo)
-        total_empenhado = df_desp[c_valor].sum()
-        maior_gasto = df_desp[c_valor].max()
-
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Empenhado", f"R$ {total_empenhado:,.2f}".replace(
-            ",", "X").replace(".", ",").replace("X", "."))
-        col2.metric("Nº de Despesas", len(df_desp))
-        col3.metric("Maior Lançamento", f"R$ {maior_gasto:,.2f}".replace(
-            ",", "X").replace(".", ",").replace("X", "."))
-
-        st.markdown("---")
-
-        col_graph, col_detalhe = st.columns([2, 1])
-
-        with col_graph:
-            st.markdown("### 📊 Quem mais recebe recursos?")
-            # Agrupamento usando as colunas detectadas
-            df_top = df_desp.groupby(c_credor)[c_valor].sum().sort_values(
-                ascending=True).tail(10).reset_index()
-
-            fig = px.bar(df_top, x=c_valor, y=c_credor, orientation='h',
-                         labels={c_valor: 'Valor (R$)', c_credor: 'Credor'},
-                         color=c_valor, color_continuous_scale='Blues', text_auto='.2s')
-            st.plotly_chart(fig, use_container_width=True)
-
-        with col_detalhe:
-            st.markdown("### 🔍 Detalhes do Credor")
-            credor_sel = st.selectbox(
-                "Selecione para detalhar:", sorted(df_desp[c_credor].unique()))
-
-            # Filtra os dados do credor selecionado
-            detalhes = df_desp[df_desp[c_credor] == credor_sel].iloc[0]
-
-            # Busca data e histórico de forma segura
-            c_data = next(
-                (c for c in ['dt_documento', 'data', 'dt_emissao'] if c in colunas), colunas[0])
-            c_hist = next(
-                (c for c in ['ds_historico', 'historico', 'observacao'] if c in colunas), None)
-
-            st.info(f"**Credor:** {detalhes[c_credor]}")
-            st.write(f"📅 **Data:** {detalhes[c_data]}")
-            st.write(f"💰 **Valor:** R$ {detalhes[c_valor]:,.2f}")
-            if c_hist:
-                st.write(f"📝 **Histórico:**")
-                st.caption(detalhes[c_hist])
-    else:
-        # Se mesmo assim falhar, mostra as colunas para sabermos o que corrigir
-        st.error(
-            f"Erro: Não identificamos as colunas de dados. Colunas disponíveis: {colunas}")
-
-# --- SEÇÃO 2: DISPENSAS E INEXIGIBILIDADES ---
+# --- FOOTER ---
 st.markdown("---")
-st.header("⚖️ Contratações Diretas")
-st.write("Processos realizados sem a necessidade de licitação tradicional.")
-
-if dispensas_raw:
-    # 1. Tratamento da estrutura (Ajuste para o erro 'dispensas')
-    if isinstance(dispensas_raw, dict) and 'dispensas' in dispensas_raw:
-        df_disp = pd.DataFrame(dispensas_raw['dispensas'])
-    elif isinstance(dispensas_raw, dict) and 'data' in dispensas_raw:
-        df_disp = pd.DataFrame(dispensas_raw['data'])
-    else:
-        df_disp = pd.DataFrame(dispensas_raw)
-
-    # 2. Identificação Dinâmica de Colunas para Dispensas
-    cols_disp = df_disp.columns.tolist()
-    c_modalidade = next(
-        (c for c in ['ds_modalidade', 'modalidade', 'tipo'] if c in cols_disp), None)
-    c_objeto = next(
-        (c for c in ['ds_objeto', 'objeto', 'descricao'] if c in cols_disp), None)
-    c_data_disp = next(
-        (c for c in ['dt_processo', 'data', 'dt_abertura'] if c in cols_disp), None)
-
-    if c_modalidade:
-        c1, c2 = st.columns([1, 2])
-
-        with c1:
-            # Gráfico de Pizza usando a coluna detectada
-            fig_pizza = px.pie(
-                df_disp,
-                names=c_modalidade,
-                title="Distribuição de Processos",
-                hole=0.5,
-                color_discrete_sequence=px.colors.qualitative.Pastel
-            )
-            st.plotly_chart(fig_pizza, use_container_width=True)
-
-        with c2:
-            st.markdown("#### Últimos Processos de Dispensa")
-            # Criando uma tabela amigável com o que estiver disponível
-            colunas_mostrar = [c for c in [c_data_disp,
-                                           c_objeto, c_modalidade] if c is not None]
-            df_disp_clean = df_disp[colunas_mostrar].copy()
-
-            # Renomear para o cidadão entender
-            nomes_amigaveis = {
-                c_data_disp: 'Data', c_objeto: 'Objeto/Finalidade', c_modalidade: 'Modalidade'}
-            df_disp_clean.rename(columns=nomes_amigaveis, inplace=True)
-
-            st.dataframe(df_disp_clean, use_container_width=True,
-                         hide_index=True)
-    else:
-        st.warning(
-            f"Dados de dispensas recebidos, mas o formato é inesperado. Colunas: {cols_disp}")
-else:
-    st.info("Nenhuma dispensa ou inexigibilidade encontrada para o período.")
-
-st.markdown("---")
-st.caption("Fonte: API Geosiap - Portal da Transparência. Dados processados para fins de controle social.")
+st.caption("ℹ️ Dados atualizados via API Geosiap - Exercício 2026. Desenvolvido para Controle Social.")
