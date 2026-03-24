@@ -82,3 +82,58 @@ if data_desp_raw:
         with col_g1:
             st.subheader("🏢 Top 10 Credores")
             df_top = df_desp.groupby(c_credor)[c_valor].sum().sort_values(ascending=True).tail(10).reset_index()
+            fig_bar = px.bar(df_top, x=c_valor, y=c_credor, orientation='h', color=c_valor, color_continuous_scale='Blues')
+            st.plotly_chart(fig_bar, use_container_width=True)
+        
+        with col_g2:
+            st.subheader("🔍 Detalhes")
+            sel_credor = st.selectbox("Filtrar Credor:", ["Selecione..."] + sorted(df_desp[c_credor].unique()))
+            if sel_credor != "Selecione...":
+                row = df_desp[df_desp[c_credor] == sel_credor].iloc[0]
+                st.success(f"**{sel_credor}**")
+                c_data = next((c for c in ['dt_doc_despesa', 'data', 'dt_documento'] if c in cols), cols[0])
+                st.write(f"📅 **Data:** {row[c_data]}")
+                st.write(f"💰 **Valor:** R$ {row[c_valor]:,.2f}")
+                if 'historico' in cols: st.caption(f"📝 **Histórico:** {row['historico']}")
+    else:
+        st.error(f"Colunas vitais não encontradas. Disponíveis: {cols}")
+
+# --- SEÇÃO 2: DISPENSAS E INEXIGIBILIDADES ---
+st.markdown("---")
+st.header("⚖️ Dispensas e Inexigibilidades")
+
+params_disp = {
+    'data_inicial': '',
+    'dta_final': '',
+    'ano': '2026-03-21',
+    'id_entidade': '2',
+    'situacao_processo_compra': '0'
+}
+
+data_disp_raw = get_data("https://pmpousoalto.geosiap.net.br:8443/portal-transparencia/api/default/licitacoes/dispensas/dispensas", params_disp)
+
+if data_disp_raw:
+    if isinstance(data_disp_raw, dict) and 'dispensas' in data_disp_raw:
+        df_disp = pd.DataFrame(data_disp_raw['dispensas'])
+    else:
+        df_disp = pd.DataFrame(data_disp_raw)
+
+    df_disp.columns = [c.lower() for c in df_disp.columns]
+    cols_d = df_disp.columns.tolist()
+
+    c_mod = next((c for c in ['ds_modalidade', 'modalidade', 'tipo_licitacao'] if c in cols_d), None)
+    
+    if c_mod:
+        col_p1, col_p2 = st.columns([1, 2])
+        with col_p1:
+            fig_pie = px.pie(df_disp, names=c_mod, title="Tipos de Contratação", hole=0.4)
+            st.plotly_chart(fig_pie, use_container_width=True)
+        with col_p2:
+            st.write("#### Lista de Processos")
+            col_view = [c for c in ['dt_processo', 'ds_objeto', c_mod] if c in cols_d]
+            st.dataframe(df_disp[col_view], use_container_width=True, hide_index=True)
+else:
+    st.warning("Nenhum dado de dispensa disponível para o período selecionado.")
+
+st.markdown("---")
+st.caption("Fonte: API Geosiap | Dados processados para controle social.")
